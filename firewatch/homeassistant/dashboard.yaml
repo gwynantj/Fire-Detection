@@ -1,0 +1,134 @@
+# Fire Watch dashboard for the chp camera.
+# Settings > Dashboards > Add dashboard > New dashboard from scratch, open it, then
+# pencil > three dots > Raw configuration editor and replace the contents with this file.
+# Requires the Advanced Camera Card (HACS) and the Frigate integration.
+
+title: Fire Watch
+views:
+  - title: CHP
+    path: chp
+    icon: mdi:fire-alert
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        column_span: 2
+        cards:
+          - type: custom:advanced-camera-card
+            grid_options:
+              columns: full
+            cameras:
+              - camera_entity: camera.chp
+                live_provider: go2rtc
+            live:
+              preload: true
+            menu:
+              style: hover
+          - type: heading
+            heading: Past detections
+            icon: mdi:history
+          - type: custom:advanced-camera-card
+            grid_options:
+              columns: full
+            cameras:
+              - camera_entity: camera.chp
+                frigate:
+                  labels:
+                    - fire
+                    - smoke
+            view:
+              default: clips
+            menu:
+              style: hover
+
+      - type: grid
+        cards:
+          - type: markdown
+            grid_options:
+              columns: full
+            text_only: true
+            content: >-
+              {% set fire = states('binary_sensor.firewatch_chp_fire') %}
+              {% set smoke = states('binary_sensor.firewatch_chp_smoke') %}
+              {% if fire == 'on' %}
+              <ha-alert alert-type="error" title="FIRE DETECTED">Confirmed in {{ (state_attr('binary_sensor.firewatch_chp_fire', 'persistence') | float(0) * 100) | round(0) }}% of recent frames (score {{ state_attr('binary_sensor.firewatch_chp_fire', 'best_score') }}). Check the camera now.</ha-alert>
+              {% elif smoke == 'on' %}
+              <ha-alert alert-type="error" title="SMOKE DETECTED">Confirmed in {{ (state_attr('binary_sensor.firewatch_chp_smoke', 'persistence') | float(0) * 100) | round(0) }}% of recent frames (score {{ state_attr('binary_sensor.firewatch_chp_smoke', 'best_score') }}). Check the camera now.</ha-alert>
+              {% elif fire in ['unavailable', 'unknown'] or smoke in ['unavailable', 'unknown'] %}
+              <ha-alert alert-type="warning" title="Detection offline">The firewatch service or the chp camera feed is unavailable. Fire/smoke alerts are not active.</ha-alert>
+              {% else %}
+              <ha-alert alert-type="success" title="All clear">Monitoring chp for fire and smoke.</ha-alert>
+              {% endif %}
+          - type: tile
+            entity: binary_sensor.firewatch_chp_fire
+            name: Fire
+            icon: mdi:fire
+            color: red
+            state_content:
+              - state
+              - last_changed
+          - type: tile
+            entity: binary_sensor.firewatch_chp_smoke
+            name: Smoke
+            icon: mdi:smoke
+            color: deep-orange
+            state_content:
+              - state
+              - last_changed
+          - type: picture-entity
+            entity: camera.firewatch_chp_snapshot
+            name: Last alarm snapshot
+            camera_view: auto
+            show_state: false
+            grid_options:
+              columns: full
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: History
+          - type: history-graph
+            hours_to_show: 24
+            grid_options:
+              columns: full
+            entities:
+              - entity: binary_sensor.firewatch_chp_fire
+                name: Fire
+              - entity: binary_sensor.firewatch_chp_smoke
+                name: Smoke
+              - entity: binary_sensor.chp_motion
+                name: Motion
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Alerts
+          - type: entities
+            grid_options:
+              columns: full
+            entities:
+              - entity: automation.fire_watch_fire_smoke_alarm
+                name: Critical alarm push
+              - entity: automation.fire_watch_alarm_cleared
+                name: Cleared push
+              - entity: automation.fire_watch_detection_offline
+                name: Offline warning
+              - entity: automation.fire_watch_detection_restored
+                name: Restored push
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Camera
+          - type: tile
+            entity: switch.chp_recordings
+            name: Recording
+          - type: tile
+            entity: switch.chp_detect
+            name: Frigate detection
+          - type: tile
+            entity: binary_sensor.chp_motion
+            name: Motion
+          - type: tile
+            entity: sensor.chp_person_count
+            name: People

@@ -1,0 +1,167 @@
+# Bodiago Frigate dashboard (UniFi cameras: front "Drws ffrynt" and back "Drws cefn").
+# Settings > Dashboards > Add dashboard > New dashboard from scratch, open it, then
+# pencil > three dots > Raw configuration editor and replace the contents with this file.
+# Requires the Advanced Camera Card (HACS) and the Frigate integration.
+
+title: Bodiago
+views:
+  - title: Cameras
+    path: cameras
+    icon: mdi:cctv
+    type: sections
+    max_columns: 4
+    sections:
+      # Front door / driveway
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Drws ffrynt (front)
+            icon: mdi:car-side
+            badges:
+              - type: entity
+                entity: binary_sensor.bodiago_motion
+                show_state: true
+                color: amber
+              - type: entity
+                entity: binary_sensor.bodiago_person_occupancy
+                show_state: true
+                color: red
+              - type: entity
+                entity: binary_sensor.bodiago_car_occupancy
+                show_state: true
+                color: blue
+          - type: custom:advanced-camera-card
+            grid_options:
+              columns: full
+            cameras:
+              - camera_entity: camera.bodiago
+                live_provider: go2rtc
+            live:
+              preload: true
+            menu:
+              style: hover
+          - type: tile
+            entity: sensor.parking_person_count
+            name: People in parking
+            icon: mdi:walk
+          - type: tile
+            entity: sensor.parking_car_count
+            name: Cars in parking
+            icon: mdi:car
+          - type: tile
+            entity: sensor.road_car_count
+            name: Cars on road
+            icon: mdi:road-variant
+          - type: tile
+            entity: sensor.bodiago_last_recognized_plate
+            name: Last plate
+            icon: mdi:card-text-outline
+            state_content:
+              - state
+              - last_changed
+          - type: picture-entity
+            entity: image.bodiago_person
+            name: Last person
+            show_state: false
+          - type: picture-entity
+            entity: image.bodiago_car
+            name: Last car
+            show_state: false
+
+      # Back garden
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Drws cefn (back)
+            icon: mdi:flower
+            badges:
+              - type: entity
+                entity: binary_sensor.bodiago_drws_cefn_motion
+                show_state: true
+                color: amber
+              - type: entity
+                entity: binary_sensor.bodiago_drws_cefn_person_occupancy
+                show_state: true
+                color: red
+          - type: custom:advanced-camera-card
+            grid_options:
+              columns: full
+            cameras:
+              - camera_entity: camera.bodiago_drws_cefn
+                live_provider: go2rtc
+            live:
+              preload: true
+            menu:
+              style: hover
+          - type: tile
+            entity: sensor.bodiago_drws_cefn_person_count
+            name: People
+            icon: mdi:walk
+          - type: tile
+            entity: sensor.bodiago_drws_cefn_last_recognized_face
+            name: Last face
+            icon: mdi:face-recognition
+            state_content:
+              - state
+              - last_changed
+          - type: picture-entity
+            entity: image.bodiago_drws_cefn_person
+            name: Last person
+            show_state: false
+            grid_options:
+              columns: full
+
+      # Activity history for both cameras
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Activity (24h)
+          - type: history-graph
+            hours_to_show: 24
+            grid_options:
+              columns: full
+            entities:
+              - entity: binary_sensor.parking_person_occupancy
+                name: Front - person (parking)
+              - entity: binary_sensor.parking_car_occupancy
+                name: Front - car (parking)
+              - entity: binary_sensor.bodiago_motion
+                name: Front - motion
+              - entity: binary_sensor.bodiago_drws_cefn_person_occupancy
+                name: Back - person
+              - entity: binary_sensor.bodiago_drws_cefn_motion
+                name: Back - motion
+
+      # Frigate controls and notifications
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Controls
+          - type: entities
+            title: Front
+            entities:
+              - entity: switch.bodiago_detect
+                name: Detection
+              - entity: switch.bodiago_recordings
+                name: Recording
+              - entity: switch.bodiago_snapshots
+                name: Snapshots
+              - entity: switch.bodiago_motion
+                name: Motion detection
+              - entity: automation.bodiago_drws_ffrynt
+                name: Phone notifications
+          - type: entities
+            title: Back
+            entities:
+              - entity: switch.bodiago_drws_cefn_detect
+                name: Detection
+              - entity: switch.bodiago_drws_cefn_recordings
+                name: Recording
+              - entity: switch.bodiago_drws_cefn_snapshots
+                name: Snapshots
+              - entity: switch.bodiago_drws_cefn_motion
+                name: Motion detection

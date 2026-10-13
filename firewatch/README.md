@@ -38,6 +38,14 @@ Home Assistant's `automations.yaml` and reload automations:
 - **Cleared:** notification when the alarm turns off.
 - **Offline:** notification if detection has been unavailable for 5 minutes, plus a follow-up when it recovers.
 
+## Reviewing detections
+
+Every detection episode, including brief ones that never become an alarm, is logged as a Frigate event on the
+camera, labelled `fire` or `smoke`. The sub label is `firewatch` for raw detections and `firewatch alarm` once
+the temporal analysis confirms it. Each event has a snapshot with the detection boxes and a clip from the camera's
+recordings. Browse them in Frigate (Review / Explore, filter by label) or in Home Assistant with the
+Advanced Camera Card (see `homeassistant/dashboard.yaml`).
+
 ## Deploy
 
 ```
@@ -62,12 +70,13 @@ environment variables:
 | `STALE_AFTER` | `60` | Seconds without a new frame before the camera is unavailable |
 | `MQTT_HOST` / `MQTT_PORT` / `MQTT_USER` / `MQTT_PASSWORD` | `127.0.0.1` / `1883` | Broker |
 | `TOPIC_PREFIX` / `DISCOVERY_PREFIX` | `firewatch` / `homeassistant` | MQTT topics |
-| `DEBUG_DIR` | | If set, saves an annotated frame for every raw detection (for tuning thresholds) |
+| `FRIGATE_EVENTS` | `true` | Log detection episodes as Frigate events |
+| `EVENT_GAP` | `10` | Seconds without a detection before a Frigate event is ended |
 
 ## Limitations
 
 - This is a supplementary warning, **not a replacement for certified smoke/heat detectors**.
 - The model was trained mostly on daylight colour imagery. On IR night-mode (grayscale) frames, flames lose their
   colour cue, so expect lower fire recall at night. Smoke is still detectable.
-- Review `DEBUG_DIR` regularly at first. If static objects cause repeated false positives, raise the class threshold
-  or add a camera-specific mask.
+- Review the logged events regularly at first. If static objects cause repeated false positives, raise the class
+  threshold or add a camera-specific mask.

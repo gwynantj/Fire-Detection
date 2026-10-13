@@ -12,6 +12,9 @@ Topics (prefix defaults to "firewatch"):
     firewatch/<camera>/<label>/state       ON/OFF confirmed alarm (retained)
     firewatch/<camera>/<label>/attributes  JSON: persistence ratio, best score
     firewatch/<camera>/snapshot            annotated JPEG of the latest alarm frame (retained)
+
+Every detection episode is also logged as a Frigate event (label fire/smoke, sub label "firewatch", or
+"firewatch alarm" once confirmed) with a snapshot and clip, so past detections can be reviewed in Frigate.
 """
 
 import ast
@@ -71,8 +74,9 @@ class Config():
         self.mqtt_password = env('MQTT_PASSWORD', None)
         self.topic_prefix = env('TOPIC_PREFIX', 'firewatch')
         self.discovery_prefix = env('DISCOVERY_PREFIX', 'homeassistant')
-        # Save annotated frames of every raw detection here (empty to disable), useful for tuning
-        self.debug_dir = env('DEBUG_DIR', '')
+        # Log detection episodes as Frigate events, ended after EVENT_GAP seconds without a detection
+        self.frigate_events = env('FRIGATE_EVENTS', 'true').lower() in ('1', 'true', 'yes')
+        self.event_gap = env('EVENT_GAP', 10, float)
 
 
 class Detector():
@@ -172,6 +176,9 @@ class Camera():
         self.last_new_frame = time.monotonic()
         self.available = None
         self.last_snapshot = 0.0
+        # Open Frigate event id and time of the last detection, per label
+        self.events = {label: None for label in LABELS}
+        self.last_seen = {label: 0.0 for label in LABELS}
 
     def fetch(self, session):
 
@@ -271,6 +278,36 @@ class FireWatch():
             self.client.publish(self.topic(cam.name, 'availability'), 'online' if available else 'offline', retain=True)
             LOGGER.log(logging.INFO if available else logging.WARNING, '%s: camera %s', cam.name, 'online' if available else 'offline')
 
+    def event_start(self, cam, label, found, w, h):
+
+        draw = [{'box': [d['box'][0] / w, d['box'][1] / h, (d['box'][2] - d['box'][0]) / w, (d['box'][3] - d['box'][1]) / h],
+                 'color': list(COLORS[label]), 'score': round(d['conf'], 2)} for d in found]
+        body = {'sub_label': 'firewatch', 'score': max(d['conf'] for d in found), 'duration': None,
+                'include_recording': True, 'draw': {'boxes': draw}}
+        try:
+            response = self.http.post(f'{self.cfg.frigate_url}/api/events/{cam.name}/{label}/create', json=body, timeout=5)
+            response.raise_for_status()
+            cam.events[label] = response.json()['event_id']
+            LOGGER.info('%s: %s event %s started', cam.name, label, cam.events[label])
+        except Exception as e:
+            LOGGER.warning('%s: could not create Frigate %s event: %s', cam.name, label, e)
+
+    def event_sub_label(self, cam, label, sub_label):
+
+        try:
+            self.http.post(f'{self.cfg.frigate_url}/api/events/{cam.events[label]}/sub_label', json={'subLabel': sub_label}, timeout=5).raise_for_status()
+        except Exception as e:
+            LOGGER.warning('%s: could not label Frigate event %s: %s', cam.name, cam.events[label], e)
+
+    def event_end(self, cam, label):
+
+        try:
+            self.http.put(f'{self.cfg.frigate_url}/api/events/{cam.events[label]}/end', json={}, timeout=5).raise_for_status()
+            LOGGER.info('%s: %s event %s ended', cam.name, label, cam.events[label])
+        except Exception as e:
+            LOGGER.warning('%s: could not end Frigate event %s: %s', cam.name, cam.events[label], e)
+        cam.events[label] = None
+
     def annotate(self, im, detections):
 
         im = im.copy()
@@ -309,8 +346,16 @@ class FireWatch():
             was_active = window.active
             if found:
                 cam.best[label] = max(cam.best[label], max(d['conf'] for d in found))
+                cam.last_seen[label] = now
+                if self.cfg.frigate_events and cam.events[label] is None:
+                    self.event_start(cam, label, found, w, h)
             active, ratio = window.update(found)
             alarm |= active
+            if cam.events[label] is not None:
+                if active and not was_active:
+                    self.event_sub_label(cam, label, 'firewatch alarm')
+                elif not active and now - cam.last_seen[label] > self.cfg.event_gap:
+                    self.event_end(cam, label)
             if active != was_active:
                 LOGGER.warning('%s: %s alarm %s (persistence %.2f, best %.2f)', cam.name, label, 'RAISED' if active else 'cleared', ratio, cam.best[label])
                 if active:
@@ -325,9 +370,6 @@ class FireWatch():
 
         if detections:
             LOGGER.info('%s: %s', cam.name, ', '.join(f"{d['label']} {d['conf']:.2f}" for d in detections))
-            if self.cfg.debug_dir:
-                os.makedirs(self.cfg.debug_dir, exist_ok=True)
-                cv2.imwrite(os.path.join(self.cfg.debug_dir, f"{cam.name}_{time.strftime('%Y%m%d_%H%M%S')}.jpg"), self.annotate(im, detections))
 
         if alarm and detections and now - cam.last_snapshot >= self.cfg.snapshot_interval:
             self.client.publish(self.topic(cam.name, 'snapshot'), cv2.imencode('.jpg', self.annotate(im, detections))[1].tobytes(), retain=True)
@@ -349,6 +391,10 @@ class FireWatch():
                 self.process(cam)
             time.sleep(max(0.0, self.cfg.interval - (time.monotonic() - started)))
 
+        for cam in self.cameras:
+            for label in LABELS:
+                if cam.events[label] is not None:
+                    self.event_end(cam, label)
         self.client.publish(self.topic('availability'), 'offline', retain=True).wait_for_publish(5)
         self.client.loop_stop()
         self.client.disconnect()

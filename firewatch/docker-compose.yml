@@ -16,6 +16,3 @@ services:
       WINDOW_SIZE: 20
       PERSISTENCE_THRESH: 0.5
       CLEAR_THRESH: 0.1
-      DEBUG_DIR: /debug
-    volumes:
-      - ./debug:/debug
