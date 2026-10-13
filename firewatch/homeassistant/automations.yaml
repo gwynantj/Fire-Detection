@@ -1,0 +1,99 @@
+# Fire Watch alerts. Append to Home Assistant's automations.yaml and reload automations.
+# Entities are created automatically over MQTT discovery by the firewatch service.
+
+- id: firewatch_alarm
+  alias: Fire Watch - fire/smoke alarm
+  description: Critical push (bypasses silent mode) when fire or smoke is confirmed, repeated every 2 minutes while active.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.firewatch_chp_fire
+        - binary_sensor.firewatch_chp_smoke
+      from: 'off'
+      to: 'on'
+  actions:
+    - repeat:
+        sequence:
+          - action: notify.mobile_app_gwynant_joness_iphone
+            data:
+              title: "🔥 {{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} detected"
+              message: >-
+                {{ state_attr(trigger.entity_id, 'camera') }}: confirmed in
+                {{ (state_attr(trigger.entity_id, 'persistence') | float(0) * 100) | round(0) }}% of recent frames
+                (score {{ state_attr(trigger.entity_id, 'best_score') }}). Check the camera now.
+              data:
+                tag: firewatch_{{ trigger.entity_id }}
+                image: /api/camera_proxy/camera.firewatch_chp_snapshot
+                url: /lovelace
+                push:
+                  interruption-level: critical
+                  sound:
+                    name: default
+                    critical: 1
+                    volume: 1.0
+                actions:
+                  - action: URI
+                    title: Open Frigate
+                    uri: http://10.5.0.55:5000/#/?camera=chp
+          - delay: '00:02:00'
+        while:
+          - condition: template
+            value_template: "{{ is_state(trigger.entity_id, 'on') }}"
+          - condition: template
+            value_template: "{{ repeat.index < 10 }}"
+
+- id: firewatch_cleared
+  alias: Fire Watch - alarm cleared
+  mode: queued
+  triggers:
+    - trigger: state
+      entity_id:
+        - binary_sensor.firewatch_chp_fire
+        - binary_sensor.firewatch_chp_smoke
+      from: 'on'
+      to: 'off'
+  actions:
+    - action: notify.mobile_app_gwynant_joness_iphone
+      data:
+        title: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} cleared"
+        message: No longer detected on {{ state_attr(trigger.entity_id, 'camera') or 'camera' }}.
+        data:
+          tag: firewatch_{{ trigger.entity_id }}
+
+- id: firewatch_offline
+  alias: Fire Watch - detection offline
+  description: Warn if the detector or camera feed has been unavailable for 5 minutes.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.firewatch_chp_smoke
+      to: unavailable
+      for: '00:05:00'
+  actions:
+    - action: notify.mobile_app_gwynant_joness_iphone
+      data:
+        title: Fire detection offline
+        message: The firewatch service or the chp camera feed has been unavailable for 5 minutes. Fire/smoke alerts are not active.
+        data:
+          tag: firewatch_offline
+
+- id: firewatch_online
+  alias: Fire Watch - detection restored
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.firewatch_chp_smoke
+      from: unavailable
+      for: '00:01:00'
+  conditions:
+    # Only announce recovery if the offline warning was sent
+    - condition: template
+      value_template: "{{ (now() - trigger.from_state.last_changed).total_seconds() > 300 }}"
+  actions:
+    - action: notify.mobile_app_gwynant_joness_iphone
+      data:
+        title: Fire detection restored
+        message: The firewatch service and chp camera feed are back online.
+        data:
+          tag: firewatch_offline

@@ -1,0 +1,21 @@
+services:
+  firewatch:
+    build: .
+    image: firewatch
+    container_name: firewatch
+    restart: unless-stopped
+    # Host networking reaches Frigate (:5000) and Mosquitto (:1883) on the published ports
+    network_mode: host
+    environment:
+      FRIGATE_URL: http://127.0.0.1:5000
+      CAMERAS: chp
+      MQTT_HOST: 127.0.0.1
+      INTERVAL: 1
+      SMOKE_CONF: 0.45
+      FIRE_CONF: 0.40
+      WINDOW_SIZE: 20
+      PERSISTENCE_THRESH: 0.5
+      CLEAR_THRESH: 0.1
+      DEBUG_DIR: /debug
+    volumes:
+      - ./debug:/debug

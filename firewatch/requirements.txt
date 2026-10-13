@@ -1,0 +1,5 @@
+numpy<2.4
+onnxruntime==1.23.*
+opencv-python-headless==4.12.*
+paho-mqtt==2.1.*
+requests==2.32.*
