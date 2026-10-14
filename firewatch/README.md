@@ -16,9 +16,15 @@ Frigate /api/<camera>/latest.jpg ──► YOLOv8n fire/smoke (ONNX, CPU) ──
   cleared when that fraction drops below `CLEAR_THRESH`. With the defaults (1 fps, 20 frames, 0.5) a fire must be
   visible in more than 10 of the last 20 seconds.
 - **Flame check:** fire detections below `FIRE_SURE_CONF` only count if the box looks like a flame: its content
-  changes between frames (flames flicker) or it contains bright, light-emitting pixels. This removes static
-  red/orange objects, which the model can score up to ~0.55, without raising `FIRE_CONF` and losing weak real fires.
-  On test footage, real flames measured flicker 16-38 and bright 0.06-0.31, a static red bowl flicker 3-6 and bright 0.
+  changes between frames more than the rest of the frame does (flames flicker) or it contains bright, light-emitting
+  pixels. This removes static red/orange objects, which the model can score up to ~0.55, without raising `FIRE_CONF`
+  and losing weak real fires. On test footage, real flames measured flicker 16-38 and bright 0.06-0.31, a static red
+  bowl flicker 3-6 (the same as whole-frame sensor noise, 4-9) and bright 0.
+- **Lighting changes:** switching the room lights flips the camera between IR (grayscale) and colour and changes the
+  whole frame at once, which made static objects look like they flicker. A mode flip or a whole-frame change of at
+  least `LIGHT_CHANGE` is logged as `lighting change`, and for `LIGHT_SETTLE` seconds afterwards unsure fire
+  detections are ignored (`ignored static fire ... (lighting change)`). Fire at or above `FIRE_SURE_CONF` and smoke
+  are unaffected.
 - **Frames:** pulled from Frigate's HTTP API, so the camera stream is not decoded twice. If the frame stops changing for
   `STALE_AFTER` seconds, the camera is marked unavailable.
 
@@ -30,6 +36,7 @@ The service publishes Home Assistant discovery messages and creates one device (
 |---|---|
 | `binary_sensor.firewatch_<camera>_fire` | Confirmed fire (device class `safety`) |
 | `binary_sensor.firewatch_<camera>_smoke` | Confirmed smoke (device class `smoke`) |
+| `binary_sensor.firewatch_<camera>_lights` | Room lights, inferred from the camera being in colour (on) or IR (off) mode |
 | `camera.firewatch_<camera>_snapshot` | Annotated frame from the latest alarm |
 
 Each binary sensor has `persistence` and `best_score` attributes. Both sensors become `unavailable` when the service is
@@ -68,8 +75,11 @@ environment variables:
 | `INTERVAL` | `1.0` | Seconds between frames per camera |
 | `SMOKE_CONF` / `FIRE_CONF` | `0.45` / `0.40` | Per-class confidence thresholds |
 | `FIRE_SURE_CONF` | `0.6` | Fire detections at or above this skip the flame check |
-| `FLICKER_MIN` | `10` | Mean grayscale change (0-255) in the box between frames that counts as flicker |
+| `FLICKER_MIN` | `6` | Mean grayscale change (0-255) in the box between frames, above the whole frame's change, that counts as flicker |
 | `BRIGHT_MIN` | `0.03` | Fraction of box pixels with brightness >= 220 that counts as emitted light |
+| `IR_SAT_MAX` | `2` | Mean saturation (0-255) below which a frame is IR night mode (colour frames are ~25) |
+| `LIGHT_CHANGE` | `20` | Whole-frame mean grayscale change that counts as a lighting change (noise is 4-9) |
+| `LIGHT_SETTLE` | `5` | Seconds after a lighting change during which unsure fire detections are ignored |
 | `MIN_AREA` | `0.0005` | Ignore boxes smaller than this fraction of the frame |
 | `WINDOW_SIZE` | `20` | Persistence window (frames) |
 | `PERSISTENCE_THRESH` | `0.5` | Fraction of the window needed to raise an alarm |

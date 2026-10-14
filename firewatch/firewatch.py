@@ -12,6 +12,7 @@ Topics (prefix defaults to "firewatch"):
     firewatch/<camera>/<label>/state       ON/OFF confirmed alarm (retained)
     firewatch/<camera>/<label>/attributes  JSON: persistence ratio, best score
     firewatch/<camera>/snapshot            annotated JPEG of the latest alarm frame (retained)
+    firewatch/<camera>/lights/state        ON/OFF room lights, inferred from the camera's colour/IR mode (retained)
 
 Every detection episode is also logged as a Frigate event (label fire/smoke, sub label "firewatch", or
 "firewatch alarm" once confirmed) with a snapshot and clip, so past detections can be reviewed in Frigate.
@@ -60,11 +61,18 @@ class Config():
         # Ignore boxes smaller than this fraction of the frame (sensor noise, tiny lamps)
         self.min_area = env('MIN_AREA', 0.0005, float)
         # Fire detections below FIRE_SURE_CONF must look like a flame: the box content changes between frames
-        # (mean grayscale difference >= FLICKER_MIN) or contains emitted light (fraction of pixels >= 220 is at
-        # least BRIGHT_MIN). Static red/orange objects score up to ~0.55 but are neither flickering nor bright.
+        # by at least FLICKER_MIN more than the whole frame does (mean grayscale difference), or it contains
+        # emitted light (fraction of pixels >= 220 is at least BRIGHT_MIN). Static red/orange objects score up
+        # to ~0.55 but are neither flickering nor bright.
         self.fire_sure_conf = env('FIRE_SURE_CONF', 0.6, float)
-        self.flicker_min = env('FLICKER_MIN', 10, float)
+        self.flicker_min = env('FLICKER_MIN', 6, float)
         self.bright_min = env('BRIGHT_MIN', 0.03, float)
+        # Lights switching on/off flip the camera between IR (mean saturation below IR_SAT_MAX) and colour, or
+        # change the whole frame by at least LIGHT_CHANGE. For LIGHT_SETTLE seconds after that, while exposure
+        # settles, the flame check cannot tell a lit-up object from a flame, so it rejects unsure fire.
+        self.ir_sat_max = env('IR_SAT_MAX', 2, float)
+        self.light_change = env('LIGHT_CHANGE', 20, float)
+        self.light_settle = env('LIGHT_SETTLE', 5, float)
         # Temporal persistence technique: alarm when the fraction of frames with a detection
         # in the last WINDOW_SIZE frames exceeds PERSISTENCE_THRESH, clear when it drops below CLEAR_THRESH
         self.window_size = env('WINDOW_SIZE', 20, int)
@@ -180,6 +188,11 @@ class Camera():
         self.best = {label: 0.0 for label in LABELS}
         self.frame_hash = None
         self.prev_gray = None
+        self.prev_time = 0.0
+        # Mean grayscale change of the whole frame since the previous frame, None if there is no recent one
+        self.background = None
+        self.ir = None
+        self.light_changed = -float('inf')
         self.last_new_frame = time.monotonic()
         self.available = None
         self.last_snapshot = 0.0
@@ -200,17 +213,38 @@ class Camera():
             raise ValueError('could not decode frame')
         return im
 
-    def flame_like(self, d, im, gray):
+    def scene(self, gray, hsv, now):
+        """Measure the whole-frame change and colour mode, returns True if the IR/colour mode flipped."""
+
+        # A frame from before a Frigate restart or fetch outage is too old to measure flicker against
+        recent = self.prev_gray is not None and self.prev_gray.shape == gray.shape and now - self.prev_time <= 3 * self.cfg.interval
+        self.background = float(cv2.absdiff(gray, self.prev_gray).mean()) if recent else None
+        # IR night mode frames are grayscale, colour frames have a mean saturation of ~25
+        ir = float(hsv[..., 1].mean()) < self.cfg.ir_sat_max
+        flipped = self.ir is not None and ir != self.ir
+        if flipped or (self.background is not None and self.background >= self.cfg.light_change):
+            if now - self.light_changed > self.cfg.light_settle:
+                LOGGER.info('%s: lighting change (%s, frame change %s)', self.name, ('IR -> colour' if self.ir else 'colour -> IR') if flipped else
+                            ('IR' if ir else 'colour'), 'n/a' if self.background is None else round(self.background, 1))
+            self.light_changed = now
+        self.ir = ir
+        return flipped
+
+    def flame_like(self, d, hsv, gray, now):
 
         if d['label'] != 'fire' or d['conf'] >= self.cfg.fire_sure_conf:
             return True
+        if now - self.light_changed <= self.cfg.light_settle:
+            d['lighting'] = True
+            return False
         x1, y1, x2, y2 = d['box']
-        if self.prev_gray is None or self.prev_gray.shape != gray.shape:
+        if self.background is None:
             d['flicker'] = None
         else:
-            d['flicker'] = float(cv2.absdiff(gray[y1:y2, x1:x2], self.prev_gray[y1:y2, x1:x2]).mean())
-        d['bright'] = float((cv2.cvtColor(im[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)[..., 2] >= 220).mean())
-        # Without a previous frame (after a restart) the flicker is unknown, so wait one frame for it unless the box is bright
+            # Relative to the whole frame, so exposure changes and sensor noise do not count as flicker
+            d['flicker'] = float(cv2.absdiff(gray[y1:y2, x1:x2], self.prev_gray[y1:y2, x1:x2]).mean()) - self.background
+        d['bright'] = float((hsv[y1:y2, x1:x2, 2] >= 220).mean())
+        # Without a recent previous frame (after a restart) the flicker is unknown, so wait one frame for it unless the box is bright
         return (d['flicker'] is not None and d['flicker'] >= self.cfg.flicker_min) or d['bright'] >= self.cfg.bright_min
 
     def stale(self):
@@ -248,6 +282,8 @@ class FireWatch():
             cam.available = None
             for label in LABELS:
                 self.publish_state(cam, label, cam.windows[label].active, 0.0)
+            if cam.ir is not None:
+                self.publish_lights(cam)
 
     def publish_discovery(self):
 
@@ -274,6 +310,19 @@ class FireWatch():
                 }
                 self.client.publish(f'{self.cfg.discovery_prefix}/binary_sensor/{uid}/config', json.dumps(payload), retain=True)
 
+            uid = f'{self.cfg.topic_prefix}_{cam.name}_lights'
+            payload = {
+                'name': f'{cam.name} lights',
+                'unique_id': uid,
+                'default_entity_id': f'binary_sensor.{uid}',
+                'device_class': 'light',
+                'state_topic': self.topic(cam.name, 'lights', 'state'),
+                'availability': availability,
+                'availability_mode': 'all',
+                'device': device,
+            }
+            self.client.publish(f'{self.cfg.discovery_prefix}/binary_sensor/{uid}/config', json.dumps(payload), retain=True)
+
             uid = f'{self.cfg.topic_prefix}_{cam.name}_snapshot'
             payload = {
                 'name': f'{cam.name} fire snapshot',
@@ -290,6 +339,10 @@ class FireWatch():
         self.client.publish(self.topic(cam.name, label, 'state'), 'ON' if active else 'OFF', retain=True)
         attributes = {'persistence': round(ratio, 2), 'best_score': round(cam.best[label], 2), 'camera': cam.name}
         self.client.publish(self.topic(cam.name, label, 'attributes'), json.dumps(attributes), retain=True)
+
+    def publish_lights(self, cam):
+
+        self.client.publish(self.topic(cam.name, 'lights', 'state'), 'OFF' if cam.ir else 'ON', retain=True)
 
     def set_available(self, cam, available):
 
@@ -354,20 +407,24 @@ class FireWatch():
             return
         self.set_available(cam, True)
 
+        now = time.monotonic()
         h, w = im.shape[:2]
         gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+        if cam.scene(gray, hsv, now) or cam.ir is not None and cam.prev_gray is None:
+            self.publish_lights(cam)
         detections, ignored = list(), list()
         for d in self.detector(im, self.cfg.conf):
             if (d['box'][2] - d['box'][0]) * (d['box'][3] - d['box'][1]) < self.cfg.min_area * w * h:
                 continue
-            (detections if cam.flame_like(d, im, gray) else ignored).append(d)
-        cam.prev_gray = gray
+            (detections if cam.flame_like(d, hsv, gray, now) else ignored).append(d)
+        cam.prev_gray, cam.prev_time = gray, now
         if ignored:
             LOGGER.info('%s: ignored static %s', cam.name, ', '.join(
+                f"{d['label']} {d['conf']:.2f} (lighting change)" if d.get('lighting') else
                 f"{d['label']} {d['conf']:.2f} (flicker {'n/a' if d['flicker'] is None else round(d['flicker'], 1)}, bright {d['bright']:.2f})"
                 for d in ignored))
 
-        now = time.monotonic()
         alarm = False
         for label in LABELS:
             found = [d for d in detections if d['label'] == label]
