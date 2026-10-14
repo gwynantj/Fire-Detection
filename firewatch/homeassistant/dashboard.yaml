@@ -20,6 +20,9 @@ views:
             cameras:
               - camera_entity: camera.chp
                 live_provider: go2rtc
+                # Frigate's go2rtc stream is named chp_stream, not after the camera
+                go2rtc:
+                  stream: chp_stream
             live:
               preload: true
             menu:
