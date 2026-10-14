@@ -210,8 +210,8 @@ class Camera():
         else:
             d['flicker'] = float(cv2.absdiff(gray[y1:y2, x1:x2], self.prev_gray[y1:y2, x1:x2]).mean())
         d['bright'] = float((cv2.cvtColor(im[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)[..., 2] >= 220).mean())
-        # Without a previous frame the flicker is unknown, so keep the detection rather than risk missing a fire
-        return d['flicker'] is None or d['flicker'] >= self.cfg.flicker_min or d['bright'] >= self.cfg.bright_min
+        # Without a previous frame (after a restart) the flicker is unknown, so wait one frame for it unless the box is bright
+        return (d['flicker'] is not None and d['flicker'] >= self.cfg.flicker_min) or d['bright'] >= self.cfg.bright_min
 
     def stale(self):
 
@@ -364,7 +364,8 @@ class FireWatch():
         cam.prev_gray = gray
         if ignored:
             LOGGER.info('%s: ignored static %s', cam.name, ', '.join(
-                f"{d['label']} {d['conf']:.2f} (flicker {d['flicker']:.1f}, bright {d['bright']:.2f})" for d in ignored))
+                f"{d['label']} {d['conf']:.2f} (flicker {'n/a' if d['flicker'] is None else round(d['flicker'], 1)}, bright {d['bright']:.2f})"
+                for d in ignored))
 
         now = time.monotonic()
         alarm = False
