@@ -59,6 +59,12 @@ class Config():
         self.iou_thres = env('IOU_THRES', 0.45, float)
         # Ignore boxes smaller than this fraction of the frame (sensor noise, tiny lamps)
         self.min_area = env('MIN_AREA', 0.0005, float)
+        # Fire detections below FIRE_SURE_CONF must look like a flame: the box content changes between frames
+        # (mean grayscale difference >= FLICKER_MIN) or contains emitted light (fraction of pixels >= 220 is at
+        # least BRIGHT_MIN). Static red/orange objects score up to ~0.55 but are neither flickering nor bright.
+        self.fire_sure_conf = env('FIRE_SURE_CONF', 0.6, float)
+        self.flicker_min = env('FLICKER_MIN', 10, float)
+        self.bright_min = env('BRIGHT_MIN', 0.03, float)
         # Temporal persistence technique: alarm when the fraction of frames with a detection
         # in the last WINDOW_SIZE frames exceeds PERSISTENCE_THRESH, clear when it drops below CLEAR_THRESH
         self.window_size = env('WINDOW_SIZE', 20, int)
@@ -173,6 +179,7 @@ class Camera():
         self.windows = {label: Persistence(cfg.window_size, cfg.persistence_thresh, cfg.clear_thresh) for label in LABELS}
         self.best = {label: 0.0 for label in LABELS}
         self.frame_hash = None
+        self.prev_gray = None
         self.last_new_frame = time.monotonic()
         self.available = None
         self.last_snapshot = 0.0
@@ -192,6 +199,19 @@ class Camera():
         if im is None:
             raise ValueError('could not decode frame')
         return im
+
+    def flame_like(self, d, im, gray):
+
+        if d['label'] != 'fire' or d['conf'] >= self.cfg.fire_sure_conf:
+            return True
+        x1, y1, x2, y2 = d['box']
+        if self.prev_gray is None or self.prev_gray.shape != gray.shape:
+            d['flicker'] = None
+        else:
+            d['flicker'] = float(cv2.absdiff(gray[y1:y2, x1:x2], self.prev_gray[y1:y2, x1:x2]).mean())
+        d['bright'] = float((cv2.cvtColor(im[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)[..., 2] >= 220).mean())
+        # Without a previous frame the flicker is unknown, so keep the detection rather than risk missing a fire
+        return d['flicker'] is None or d['flicker'] >= self.cfg.flicker_min or d['bright'] >= self.cfg.bright_min
 
     def stale(self):
 
@@ -335,8 +355,16 @@ class FireWatch():
         self.set_available(cam, True)
 
         h, w = im.shape[:2]
-        detections = [d for d in self.detector(im, self.cfg.conf)
-                      if (d['box'][2] - d['box'][0]) * (d['box'][3] - d['box'][1]) >= self.cfg.min_area * w * h]
+        gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        detections, ignored = list(), list()
+        for d in self.detector(im, self.cfg.conf):
+            if (d['box'][2] - d['box'][0]) * (d['box'][3] - d['box'][1]) < self.cfg.min_area * w * h:
+                continue
+            (detections if cam.flame_like(d, im, gray) else ignored).append(d)
+        cam.prev_gray = gray
+        if ignored:
+            LOGGER.info('%s: ignored static %s', cam.name, ', '.join(
+                f"{d['label']} {d['conf']:.2f} (flicker {d['flicker']:.1f}, bright {d['bright']:.2f})" for d in ignored))
 
         now = time.monotonic()
         alarm = False

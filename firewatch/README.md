@@ -15,6 +15,10 @@ Frigate /api/<camera>/latest.jpg ──► YOLOv8n fire/smoke (ONNX, CPU) ──
   An alarm is raised when more than `PERSISTENCE_THRESH` of the last `WINDOW_SIZE` frames contain a detection, and
   cleared when that fraction drops below `CLEAR_THRESH`. With the defaults (1 fps, 20 frames, 0.5) a fire must be
   visible in more than 10 of the last 20 seconds.
+- **Flame check:** fire detections below `FIRE_SURE_CONF` only count if the box looks like a flame: its content
+  changes between frames (flames flicker) or it contains bright, light-emitting pixels. This removes static
+  red/orange objects, which the model can score up to ~0.55, without raising `FIRE_CONF` and losing weak real fires.
+  On test footage, real flames measured flicker 16-38 and bright 0.06-0.31, a static red bowl flicker 3-6 and bright 0.
 - **Frames:** pulled from Frigate's HTTP API, so the camera stream is not decoded twice. If the frame stops changing for
   `STALE_AFTER` seconds, the camera is marked unavailable.
 
@@ -63,6 +67,9 @@ environment variables:
 | `CAMERAS` | `chp` | Comma-separated Frigate camera names |
 | `INTERVAL` | `1.0` | Seconds between frames per camera |
 | `SMOKE_CONF` / `FIRE_CONF` | `0.45` / `0.40` | Per-class confidence thresholds |
+| `FIRE_SURE_CONF` | `0.6` | Fire detections at or above this skip the flame check |
+| `FLICKER_MIN` | `10` | Mean grayscale change (0-255) in the box between frames that counts as flicker |
+| `BRIGHT_MIN` | `0.03` | Fraction of box pixels with brightness >= 220 that counts as emitted light |
 | `MIN_AREA` | `0.0005` | Ignore boxes smaller than this fraction of the frame |
 | `WINDOW_SIZE` | `20` | Persistence window (frames) |
 | `PERSISTENCE_THRESH` | `0.5` | Fraction of the window needed to raise an alarm |
@@ -79,4 +86,4 @@ environment variables:
 - The model was trained mostly on daylight colour imagery. On IR night-mode (grayscale) frames, flames lose their
   colour cue, so expect lower fire recall at night. Smoke is still detectable.
 - Review the logged events regularly at first. If static objects cause repeated false positives, raise the class
-  threshold or add a camera-specific mask.
+  threshold or add a camera-specific mask. Detections dropped by the flame check are logged as `ignored static`.
